@@ -1,31 +1,62 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
 import { initializeApp, getApps, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword } from 'firebase/auth';
 import { db, firebaseConfig } from '../firebase';
 import Swal from 'sweetalert2';
+import { useAppContext } from '../context/AppContext';
 
 function SettingPage({ currentUser, staffList, onStaffUpdate }) {
+  const { settings: ctxSettings, fetchSettings: refreshCtxSettings } = useAppContext();
   const [staff, setStaff] = useState([]);
   const [settings, setSettings] = useState({
     fallbackOption: 'waiting',
-    overtimeHour: 10
+    overtimeHour: 10,
+    overtimeMinute: 0,
+    overtimeEnabled: true,
+    aiAssignEnabled: true,
+    companyName: '화이트라인',
+    companyLogo: '📋',
+    priceStep: 1000  // 금액 증감 단위 (1000/5000/10000)
   });
   const [settingsDocId, setSettingsDocId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  // 사용약제 마스터 state
+  const [pesticideTypes, setPesticideTypes] = useState([]);
 
   useEffect(() => { fetchData(); }, []);
 
+  // staffList prop 변경 시 로컬 staff 동기화
+  useEffect(() => {
+    if (staffList && staffList.length > 0) setStaff(staffList);
+  }, [staffList]);
+
   const fetchData = async () => {
     try {
-      const staffSnap = await getDocs(collection(db, 'staff'));
-      setStaff(staffSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      // staff: prop 우선 사용, 없으면 직접 fetch
+      if (staffList && staffList.length > 0) {
+        setStaff(staffList);
+      } else {
+        const staffSnap = await getDocs(collection(db, 'staff'));
+        setStaff(staffSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }
 
+      // settings: doc id가 필요해서 1회만 fetch (저장/수정에 필요)
       const settingsSnap = await getDocs(collection(db, 'settings'));
       if (settingsSnap.docs.length > 0) {
         setSettings(settingsSnap.docs[0].data());
         setSettingsDocId(settingsSnap.docs[0].id);
       }
+
+      // 사용약제 마스터 로드
+      const pestSnap = await getDocs(collection(db, 'pesticideTypes'));
+      const pestList = pestSnap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+      setPesticideTypes(pestList);
+
       setLoading(false);
     } catch (error) {
       console.error(error);
@@ -225,23 +256,6 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
     }
   };
 
-  // 활동 로그 기록
-  const logActivity = async (action, target, details = '') => {
-    try {
-      await addDoc(collection(db, 'activityLogs'), {
-        action,
-        target,
-        details,
-        performedBy: currentUser?.name || '',
-        performedById: currentUser?.visibleId || '',
-        performedByRole: currentUser?.role || '',
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('로그 기록 실패:', error);
-    }
-  };
-
   // 원조 관리자 확인 (isOriginal이 있거나, 없으면 visibleId='admin'인 master, 그것도 없으면 첫 번째 master)
   const getOriginalMaster = () => {
     if (!staff || staff.length === 0) return null;
@@ -270,116 +284,6 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
     const currentId = currentUser.visibleId?.split('@')[0];
     return originalId === currentId || original.id === currentUser.id;
   })();
-
-  // 활동 기록 보기
-  const handleViewActivityLog = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'activityLogs'));
-      const allLogs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-      if (allLogs.length === 0) {
-        Swal.fire('활동 기록', '기록이 없습니다.', 'info');
-        return;
-      }
-
-      // 고유 직원 목록 추출
-      const uniqueStaff = [...new Set(allLogs.map(l => l.performedBy))].filter(Boolean);
-
-      // 필터 팝업 표시
-      const showFilteredLogs = (logs, filterInfo = '전체') => {
-        let html = `
-          <div style="margin-bottom:15px; display:flex; gap:8px; flex-wrap:wrap;">
-            <select id="log-staff" style="padding:8px; border:1px solid #ddd; border-radius:6px; flex:1; min-width:100px;">
-              <option value="">👤 전체 직원</option>
-              ${uniqueStaff.map(s => `<option value="${s}">${s}</option>`).join('')}
-            </select>
-            <input type="date" id="log-date" style="padding:8px; border:1px solid #ddd; border-radius:6px; flex:1; min-width:120px;">
-            <button id="log-search-btn" style="padding:8px 15px; background:#3b82f6; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">🔍 검색</button>
-            <button id="log-reset-btn" style="padding:8px 15px; background:#6b7280; color:white; border:none; border-radius:6px; cursor:pointer;">↩️ 초기화</button>
-          </div>
-          <div style="font-size:11px; color:#666; margin-bottom:10px;">📊 ${filterInfo} (${logs.length}건)</div>
-        `;
-
-        html += '<div style="max-height:350px; overflow-y:auto; text-align:left; border:1px solid #eee; border-radius:8px;">';
-        
-        if (logs.length === 0) {
-          html += '<div style="padding:20px; text-align:center; color:#666;">검색 결과가 없습니다.</div>';
-        } else {
-          logs.slice(0, 100).forEach(log => {
-            const date = new Date(log.timestamp);
-            const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
-            const roleColor = log.performedByRole === 'master' ? '#dc2626' : 
-                              log.performedByRole === 'master1' ? '#7c3aed' : '#0891b2';
-            html += `
-              <div style="padding:12px; border-bottom:1px solid #f3f4f6; font-size:12px;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                  <span style="font-weight:bold; color:#1f2937;">${log.action}</span>
-                  <span style="color:#6b7280; font-size:11px;">${dateStr}</span>
-                </div>
-                <div style="color:#374151;">📌 ${log.target}</div>
-                ${log.details ? `<div style="color:#6b7280; font-size:11px; margin-top:2px;">→ ${log.details}</div>` : ''}
-                <div style="margin-top:6px;">
-                  <span style="background:${roleColor}; color:white; padding:3px 8px; border-radius:4px; font-size:10px;">
-                    ${log.performedBy}
-                  </span>
-                </div>
-              </div>
-            `;
-          });
-        }
-        html += '</div>';
-
-        Swal.fire({
-          title: '📋 활동 기록',
-          html,
-          width: '500px',
-          showCloseButton: true,
-          showConfirmButton: false,
-          didOpen: () => {
-            // 검색 버튼 클릭
-            document.getElementById('log-search-btn').onclick = () => {
-              const staffFilter = document.getElementById('log-staff').value;
-              const dateFilter = document.getElementById('log-date').value;
-              
-              let filtered = allLogs;
-              let filterDesc = [];
-              
-              if (staffFilter) {
-                filtered = filtered.filter(l => l.performedBy === staffFilter);
-                filterDesc.push(staffFilter);
-              }
-              
-              if (dateFilter) {
-                filtered = filtered.filter(l => {
-                  const logDate = new Date(l.timestamp);
-                  const filterDate = new Date(dateFilter);
-                  return logDate.getFullYear() === filterDate.getFullYear() &&
-                         logDate.getMonth() === filterDate.getMonth() &&
-                         logDate.getDate() === filterDate.getDate();
-                });
-                filterDesc.push(dateFilter);
-              }
-              
-              const info = filterDesc.length > 0 ? filterDesc.join(' / ') : '전체';
-              showFilteredLogs(filtered, info);
-            };
-            
-            // 초기화 버튼 클릭
-            document.getElementById('log-reset-btn').onclick = () => {
-              showFilteredLogs(allLogs, '전체');
-            };
-          }
-        });
-      };
-
-      showFilteredLogs(allLogs, '전체');
-      
-    } catch (error) {
-      console.error('로그 로드 실패:', error);
-      Swal.fire('오류', '기록 로드 실패', 'error');
-    }
-  };
 
   const handleEditStaff = async (s) => {
     // 원조 관리자인지 확인
@@ -485,7 +389,6 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
       const r = await Swal.fire({ title: '삭제?', text: s.name, showCancelButton: true, confirmButtonColor: '#ef4444' });
       if (r.isConfirmed) {
         await deleteDoc(doc(db, 'staff', s.id));
-        await logActivity('직원삭제', s.name, `역할: ${s.role}`);
         fetchData();
         if (onStaffUpdate) onStaffUpdate();
       }
@@ -514,26 +417,129 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
       
       await updateDoc(doc(db, 'staff', s.id), value);
       
-      if (changes.length > 0) {
-        await logActivity('직원정보수정', s.name, changes.join(', '));
-      }
-      
       fetchData();
       if (onStaffUpdate) onStaffUpdate();
     }
   };
 
+  // ── 사용약제 마스터 관리 ────────────────────────
+  const UNIT_OPTIONS = ['ml', 'g', 'cc', 'L', 'kg', '봉', '개', '정'];
+
+  const handleAddPesticide = async () => {
+    const { value } = await Swal.fire({
+      title: '🧪 약제 추가',
+      html: `
+        <div style="text-align:left;padding:0 8px;">
+          <div style="margin-bottom:10px;">
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">약제명 *</label>
+            <input id="pest-name" class="swal2-input" placeholder="예: 사이클로나이트 50SC" style="margin:0;width:100%;box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">단위 *</label>
+            <select id="pest-unit" class="swal2-input" style="margin:0;width:100%;box-sizing:border-box;">
+              ${UNIT_OPTIONS.map(u => `<option value="${u}">${u}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: '추가',
+      cancelButtonText: '취소',
+      confirmButtonColor: '#10b981',
+      preConfirm: () => {
+        const name = document.getElementById('pest-name').value.trim();
+        const unit = document.getElementById('pest-unit').value;
+        if (!name) { Swal.showValidationMessage('약제명을 입력하세요'); return false; }
+        return { name, unit };
+      }
+    });
+    if (!value) return;
+    try {
+      const newOrder = pesticideTypes.length;
+      const docRef = await addDoc(collection(db, 'pesticideTypes'), {
+        name: value.name,
+        unit: value.unit,
+        order: newOrder,
+        createdAt: new Date().toISOString()
+      });
+      setPesticideTypes(prev => [...prev, { id: docRef.id, name: value.name, unit: value.unit, order: newOrder }]);
+    } catch (e) {
+      Swal.fire('오류', '저장 실패', 'error');
+    }
+  };
+
+  const handleEditPesticide = async (pest) => {
+    const { value } = await Swal.fire({
+      title: '🧪 약제 수정',
+      html: `
+        <div style="text-align:left;padding:0 8px;">
+          <div style="margin-bottom:10px;">
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">약제명</label>
+            <input id="pest-name" class="swal2-input" value="${pest.name}" style="margin:0;width:100%;box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">단위</label>
+            <select id="pest-unit" class="swal2-input" style="margin:0;width:100%;box-sizing:border-box;">
+              ${UNIT_OPTIONS.map(u => `<option value="${u}" ${u === pest.unit ? 'selected' : ''}>${u}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      `,
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: '저장',
+      denyButtonText: '삭제',
+      cancelButtonText: '취소',
+      confirmButtonColor: '#3b82f6',
+      denyButtonColor: '#ef4444',
+      preConfirm: () => {
+        const name = document.getElementById('pest-name').value.trim();
+        const unit = document.getElementById('pest-unit').value;
+        if (!name) { Swal.showValidationMessage('약제명을 입력하세요'); return false; }
+        return { name, unit };
+      }
+    });
+
+    if (value) {
+      // 수정
+      try {
+        await updateDoc(doc(db, 'pesticideTypes', pest.id), { name: value.name, unit: value.unit });
+        setPesticideTypes(prev => prev.map(p => p.id === pest.id ? { ...p, name: value.name, unit: value.unit } : p));
+      } catch (e) { Swal.fire('오류', '수정 실패', 'error'); }
+    } else if (value === false) {
+      // 삭제 버튼
+      const confirm = await Swal.fire({
+        title: '삭제 확인',
+        text: `"${pest.name}" 약제를 삭제하시겠습니까?`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: '삭제',
+        cancelButtonText: '취소',
+        confirmButtonColor: '#ef4444'
+      });
+      if (confirm.isConfirmed) {
+        try {
+          await deleteDoc(doc(db, 'pesticideTypes', pest.id));
+          setPesticideTypes(prev => prev.filter(p => p.id !== pest.id));
+        } catch (e) { Swal.fire('오류', '삭제 실패', 'error'); }
+      }
+    }
+  };
+
   const handleSaveSettings = async () => {
     try {
+      
       if (settingsDocId) {
         await updateDoc(doc(db, 'settings', settingsDocId), settings);
       } else {
         const docRef = await addDoc(collection(db, 'settings'), settings);
         setSettingsDocId(docRef.id);
       }
-      Swal.fire('완료', '설정 저장됨', 'success');
+      await refreshCtxSettings(); // AppContext 갱신 → 전체 컴포넌트에 즉시 반영
+      await Swal.fire({ icon: 'success', title: '완료', text: '설정이 저장되었습니다.', timer: 1500, showConfirmButton: false });
     } catch (error) {
-      Swal.fire('오류', '저장 실패', 'error');
+      console.error('💾 저장 오류:', error);
+      Swal.fire('오류', `저장 실패: ${error.message}`, 'error');
     }
   };
 
@@ -733,6 +739,326 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
     });
   };
 
+  // 직원ID 일괄 변경 함수 (staffName 기준 자동 매칭)
+  const handleMigrateStaffId = async () => {
+    try {
+      // 1단계: staff 목록에서 name → visibleId 매핑 가져오기
+      const staffSnap = await getDocs(collection(db, 'staff'));
+      const staffMap = {};  // { "이대일": "admin", "이창주": "changju" }
+      staffSnap.docs.forEach(d => {
+        const data = d.data();
+        if (data.name && data.visibleId) {
+          staffMap[data.name] = data.visibleId;
+        }
+      });
+
+      if (Object.keys(staffMap).length === 0) {
+        Swal.fire('알림', '등록된 직원이 없습니다.', 'info');
+        return;
+      }
+
+      // 매핑 미리보기
+      const staffMapHtml = Object.entries(staffMap)
+        .map(([name, id]) => `• ${name} → ${id}`)
+        .join('<br>');
+
+      const startResult = await Swal.fire({
+        title: '🔄 직원ID 통합 정리',
+        html: `
+          <div style="text-align:left; font-size:13px;">
+            <p>모든 데이터에서 <b>staffName</b> 기준으로<br><b>staffId</b>를 자동으로 채웁니다.</p>
+            <div style="background:#f0fdf4; padding:12px; border-radius:8px; margin:15px 0;">
+              <div style="font-weight:bold; margin-bottom:8px; color:#16a34a;">📋 직원 매핑</div>
+              <div style="font-size:12px;">${staffMapHtml}</div>
+            </div>
+            <p style="font-size:11px; color:#666;">
+              ✅ staffId가 비어있거나 잘못된 경우 모두 수정됩니다.<br>
+              ✅ customers, events 등 모든 데이터 정리
+            </p>
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: '다음 (미리보기)',
+        cancelButtonText: '취소'
+      });
+
+      if (!startResult.isConfirmed) return;
+
+      // 2단계: 각 컬렉션에서 변경될 문서 수 확인
+      Swal.fire({
+        title: '검색 중...',
+        html: '변경될 데이터를 확인하고 있습니다.',
+        allowOutsideClick: false,
+        didOpen: () => { Swal.showLoading(); }
+      });
+
+      const collections = ['customers', 'events', 'dailyClose', 'monthClose', 'attendance', 'folders', 'extraWork'];
+      const counts = {};
+      const details = {};  // 상세 정보
+      let totalCount = 0;
+
+      for (const collName of collections) {
+        try {
+          const snap = await getDocs(collection(db, collName));
+          let collCount = 0;
+          const collDetails = [];
+
+          for (const docSnap of snap.docs) {
+            const data = docSnap.data();
+            const staffName = data.staffName;
+            const currentStaffId = data.staffId || '';
+            const correctStaffId = staffMap[staffName];
+
+            // staffName이 있고, 올바른 ID를 알고 있고, 현재 ID가 다르면 변경 대상
+            if (staffName && correctStaffId && currentStaffId !== correctStaffId) {
+              collCount++;
+              if (collDetails.length < 3) {
+                collDetails.push(`${data.title || data.name || staffName}: "${currentStaffId || '(없음)'}" → "${correctStaffId}"`);
+              }
+            }
+          }
+
+          counts[collName] = collCount;
+          details[collName] = collDetails;
+          totalCount += collCount;
+        } catch (e) {
+          counts[collName] = 0;
+          details[collName] = [];
+        }
+      }
+
+      if (totalCount === 0) {
+        Swal.fire('✅ 완료', '정리할 데이터가 없습니다.\n모든 staffId가 정상입니다.', 'success');
+        return;
+      }
+
+      // 3단계: 미리보기 표시
+      let previewHtml = '';
+      for (const [collName, count] of Object.entries(counts)) {
+        if (count > 0) {
+          previewHtml += `<div style="margin-bottom:10px;">`;
+          previewHtml += `<b>📁 ${collName}: ${count}건</b>`;
+          if (details[collName].length > 0) {
+            previewHtml += `<div style="font-size:11px; color:#666; margin-left:15px;">`;
+            previewHtml += details[collName].join('<br>');
+            if (count > 3) previewHtml += `<br>... 외 ${count - 3}건`;
+            previewHtml += `</div>`;
+          }
+          previewHtml += `</div>`;
+        }
+      }
+
+      const confirmResult = await Swal.fire({
+        title: '📋 변경 미리보기',
+        html: `
+          <div style="text-align:left; font-size:13px;">
+            <div style="background:#fef3c7; padding:10px; border-radius:8px; margin-bottom:15px;">
+              <b>총 ${totalCount}건</b> 변경 예정
+            </div>
+            <div style="max-height:250px; overflow-y:auto;">
+              ${previewHtml}
+            </div>
+            <p style="color:#ef4444; font-size:12px; margin-top:15px;">⚠️ 이 작업은 되돌릴 수 없습니다!</p>
+          </div>
+        `,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: '정리 실행',
+        cancelButtonText: '취소',
+        confirmButtonColor: '#8b5cf6'
+      });
+
+      if (!confirmResult.isConfirmed) return;
+
+      // 4단계: 실제 변경 실행
+      Swal.fire({
+        title: '정리 중...',
+        html: '잠시만 기다려주세요.',
+        allowOutsideClick: false,
+        didOpen: () => { Swal.showLoading(); }
+      });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const collName of collections) {
+        try {
+          const snap = await getDocs(collection(db, collName));
+          for (const docSnap of snap.docs) {
+            const data = docSnap.data();
+            const staffName = data.staffName;
+            const currentStaffId = data.staffId || '';
+            const correctStaffId = staffMap[staffName];
+
+            if (staffName && correctStaffId && currentStaffId !== correctStaffId) {
+              await updateDoc(doc(db, collName, docSnap.id), {
+                staffId: correctStaffId,
+                staffVisibleId: correctStaffId
+              });
+              successCount++;
+            }
+          }
+        } catch (e) {
+          console.error(`${collName} 오류:`, e);
+          errorCount++;
+        }
+      }
+
+      Swal.fire({
+        title: '✅ 정리 완료',
+        html: `
+          <div style="text-align:center;">
+            <p style="font-size:20px; margin-bottom:10px;">🎉</p>
+            <p><b>${successCount}건</b> 정리 완료</p>
+            ${errorCount > 0 ? `<p style="color:#ef4444;">오류: ${errorCount}건</p>` : ''}
+            <p style="color:#666; font-size:12px; margin-top:15px;">페이지를 새로고침하세요.</p>
+          </div>
+        `,
+        icon: 'success'
+      });
+
+    } catch (error) {
+      console.error('ID 정리 오류:', error);
+      Swal.fire('오류', '정리 중 오류가 발생했습니다.', 'error');
+    }
+  };
+
+  // 중복 이벤트 정리 함수
+  const handleCleanDuplicateEvents = async () => {
+    try {
+      Swal.fire({
+        title: '검색 중...',
+        html: '중복 이벤트를 찾고 있습니다.',
+        allowOutsideClick: false,
+        didOpen: () => { Swal.showLoading(); }
+      });
+
+      // events 컬렉션에서 모든 이벤트 가져오기
+      const eventsSnap = await getDocs(collection(db, 'events'));
+      const allEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      // 날짜 + 고객명 + staffId 기준으로 그룹화
+      const grouped = {};
+      allEvents.forEach(e => {
+        const key = `${e.date}_${e.title}_${e.staffId || ''}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(e);
+      });
+
+      // 중복 찾기 (2개 이상인 그룹)
+      const duplicates = [];
+      const toDelete = [];
+
+      Object.entries(grouped).forEach(([key, events]) => {
+        if (events.length > 1) {
+          // 완료/야근 상태 우선 유지
+          const completed = events.filter(e => ['완료', '야근', '마감완료'].includes(e.status));
+          const pending = events.filter(e => !['완료', '야근', '마감완료'].includes(e.status));
+
+          if (completed.length > 0) {
+            // 완료된 게 있으면 배정 상태 삭제
+            toDelete.push(...pending);
+            duplicates.push({
+              key,
+              keep: completed[0],
+              delete: pending,
+              reason: '완료 유지, 배정 삭제'
+            });
+          } else {
+            // 모두 배정 상태면 첫 번째만 유지
+            const [keep, ...rest] = events;
+            toDelete.push(...rest);
+            duplicates.push({
+              key,
+              keep,
+              delete: rest,
+              reason: '첫 번째 유지, 나머지 삭제'
+            });
+          }
+        }
+      });
+
+      if (toDelete.length === 0) {
+        Swal.fire('✅ 완료', '중복 이벤트가 없습니다.', 'success');
+        return;
+      }
+
+      // 미리보기
+      let previewHtml = '';
+      duplicates.slice(0, 10).forEach(d => {
+        const [date, title] = d.key.split('_');
+        previewHtml += `
+          <div style="margin-bottom:12px; padding:10px; background:#f8fafc; border-radius:8px; text-align:left;">
+            <div style="font-weight:bold; font-size:13px;">${title}</div>
+            <div style="font-size:11px; color:#666;">${date}</div>
+            <div style="font-size:11px; color:#16a34a;">✅ 유지: ${d.keep.status}</div>
+            <div style="font-size:11px; color:#dc2626;">🗑️ 삭제: ${d.delete.length}건 (${d.delete.map(e => e.status).join(', ')})</div>
+          </div>
+        `;
+      });
+
+      if (duplicates.length > 10) {
+        previewHtml += `<div style="color:#666; font-size:12px;">... 외 ${duplicates.length - 10}건</div>`;
+      }
+
+      const confirmResult = await Swal.fire({
+        title: '🧹 중복 이벤트 정리',
+        html: `
+          <div style="text-align:left; font-size:13px;">
+            <div style="background:#fef3c7; padding:10px; border-radius:8px; margin-bottom:15px;">
+              <b>총 ${toDelete.length}건</b> 삭제 예정 (${duplicates.length}개 그룹)
+            </div>
+            <div style="max-height:300px; overflow-y:auto;">
+              ${previewHtml}
+            </div>
+            <p style="color:#ef4444; font-size:12px; margin-top:15px;">⚠️ 이 작업은 되돌릴 수 없습니다!</p>
+          </div>
+        `,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: '삭제 실행',
+        cancelButtonText: '취소',
+        confirmButtonColor: '#ef4444'
+      });
+
+      if (!confirmResult.isConfirmed) return;
+
+      // 삭제 실행
+      Swal.fire({
+        title: '삭제 중...',
+        html: '잠시만 기다려주세요.',
+        allowOutsideClick: false,
+        didOpen: () => { Swal.showLoading(); }
+      });
+
+      let successCount = 0;
+      for (const event of toDelete) {
+        try {
+          await deleteDoc(doc(db, 'events', event.id));
+          successCount++;
+        } catch (e) {
+          console.error('삭제 오류:', e);
+        }
+      }
+
+      Swal.fire({
+        title: '✅ 정리 완료',
+        html: `
+          <div style="text-align:center;">
+            <p style="font-size:20px; margin-bottom:10px;">🧹</p>
+            <p><b>${successCount}건</b> 삭제 완료</p>
+            <p style="color:#666; font-size:12px; margin-top:15px;">페이지를 새로고침하세요.</p>
+          </div>
+        `,
+        icon: 'success'
+      });
+
+    } catch (error) {
+      console.error('중복 정리 오류:', error);
+      Swal.fire('오류', '정리 중 오류가 발생했습니다.', 'error');
+    }
+  };
+
   // 고객 코드 정리 함수
   const handleNormalizeCode = async () => {
     try {
@@ -854,7 +1180,6 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
                   </span>
                   {isThisOriginal && <span style={{fontSize:'12px'}}>👑</span>}
                   {s.role === 'master' && !isThisOriginal && <span style={{fontSize:'12px'}}>⭐</span>}
-                  {s.specialWorkPermission && <span style={styles.permBadge}>🌟</span>}
                 </div>
                 <div style={styles.staffInfo}>
                   {s.department && <span style={{marginRight:'10px'}}>🏢 {s.department}</span>}
@@ -867,40 +1192,15 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
         </div>
       </div>
 
-      {/* 특별작업 권한 */}
+      {/* 내 정보 - 담당자 전화번호 */}
       <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>🌟 특별작업 권한</h3>
-        <p style={styles.settingDesc}>선택된 직원은 고객클레임, 상담, 추가작업을 등록할 수 있습니다.</p>
-        <div style={styles.permList}>
-          {staff.filter(s => s.role === 'staff').map(s => (
-            <div key={s.id} style={styles.permItem}>
-              <span style={styles.permName}>{s.name}</span>
-              <button 
-                onClick={async () => {
-                  await updateDoc(doc(db, 'staff', s.id), { 
-                    specialWorkPermission: !s.specialWorkPermission 
-                  });
-                  fetchData();
-                  if (onStaffUpdate) onStaffUpdate();
-                }}
-                style={{
-                  ...styles.permToggle,
-                  backgroundColor: s.specialWorkPermission ? '#22c55e' : '#e5e7eb',
-                  color: s.specialWorkPermission ? 'white' : '#666'
-                }}
-              >
-                {s.specialWorkPermission ? '✅ 권한있음' : '❌ 권한없음'}
-              </button>
-            </div>
-          ))}
-          {staff.filter(s => s.role === 'staff').length === 0 && (
-            <div style={{color:'#666', fontSize:'12px', textAlign:'center', padding:'10px'}}>
-              일반 직원이 없습니다.
-            </div>
-          )}
-        </div>
-        <div style={styles.permNote}>
-          ※ 관리자/팀장/부팀장은 기본적으로 권한이 있습니다.
+        <h3 style={styles.sectionTitle}>👤 내 정보</h3>
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>📞 담당자 전화번호</label>
+          <p style={styles.settingDesc}>
+            견적서 PDF의 담당자 서명란에 표시되는 본인 연락처입니다.
+          </p>
+          <MyPhoneEditor currentUser={currentUser} />
         </div>
       </div>
 
@@ -908,36 +1208,582 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
       <div style={styles.section}>
         <h3 style={styles.sectionTitle}>⚙️ 시스템 설정</h3>
         
-        {/* 야근 기준시간 */}
+        {/* 업체명 설정 */}
         <div style={styles.settingItem}>
-          <label style={styles.settingLabel}>🌙 야근 인정 기준시간</label>
-          <p style={styles.settingDesc}>이 시간 전에 출근해야 야근이 인정됩니다.</p>
-          <select 
-            value={settings.overtimeHour || 10} 
-            onChange={(e) => setSettings({...settings, overtimeHour: parseInt(e.target.value)})}
-            style={styles.settingSelect}
-          >
-            {[7, 8, 9, 10, 11, 12].map(h => (
-              <option key={h} value={h}>오전 {h}시</option>
-            ))}
-          </select>
+          <label style={styles.settingLabel}>🏢 업체명</label>
+          <p style={styles.settingDesc}>앱 상단에 표시될 업체 이름입니다.</p>
+          <input 
+            type="text"
+            value={settings.companyName || '화이트라인'}
+            onChange={(e) => setSettings({...settings, companyName: e.target.value})}
+            placeholder="업체명 입력"
+            style={{
+              padding: '10px 15px',
+              borderRadius: '8px',
+              border: '1px solid #ddd',
+              fontSize: '14px',
+              width: '200px'
+            }}
+          />
         </div>
 
-        {/* 배정탈락 설정 */}
-        <div style={styles.settingItem}>
-          <label style={styles.settingLabel}>📅 배정탈락 고객 처리</label>
-          <p style={styles.settingDesc}>플랜 복사 시 해당 주/요일이 없는 경우</p>
-          <select 
-            value={settings.fallbackOption} 
-            onChange={(e) => setSettings({...settings, fallbackOption: e.target.value})}
-            style={styles.settingSelect}
+        {/* 앱 시작 탭 설정 */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ fontWeight: 'bold', marginBottom: 8, display: 'block' }}>앱 시작 탭</label>
+          <select
+            value={settings.startTab || 'calendar'}
+            onChange={(e) => setSettings({...settings, startTab: e.target.value})}
+            style={{ padding: '10px 14px', borderRadius: 8, border: '1px solid #ddd', fontSize: 14, width: 200 }}
           >
-            <option value="waiting">대기목록으로</option>
-            <option value="firstDay">해당 월 1일에 배정</option>
+            <option value="calendar">📅 배정플랜</option>
+            <option value="scheduler">🗓️ 스케쥴러</option>
+            <option value="customers">👥 고객관리</option>
+            <option value="staff">📊 직원관리</option>
+            <option value="sales">💼 영업</option>
           </select>
+          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>앱을 열었을 때 처음 표시되는 탭을 선택합니다.</p>
+        </div>
+
+        {/* 로고 이미지 설정 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>🖼️ 로고 이미지</label>
+          <p style={styles.settingDesc}>앱 상단에 표시될 로고 이미지입니다. (권장: 100x100px)</p>
+          <div style={{display:'flex', gap:'15px', alignItems:'center', flexWrap:'wrap'}}>
+            {/* 현재 로고 미리보기 */}
+            <div style={{
+              width: '60px',
+              height: '60px',
+              borderRadius: '8px',
+              border: '2px solid #ddd',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#f8fafc',
+              overflow: 'hidden'
+            }}>
+              {settings.companyLogo ? (
+                <img 
+                  src={settings.companyLogo} 
+                  alt="로고" 
+                  style={{width:'100%', height:'100%', objectFit:'cover'}}
+                />
+              ) : (
+                <span style={{fontSize:'30px'}}>📋</span>
+              )}
+            </div>
+            
+            {/* 이미지 업로드 버튼 */}
+            <label style={{
+              padding: '10px 20px',
+              backgroundColor: '#3b82f6',
+              color: 'white',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '14px'
+            }}>
+              📁 이미지 선택
+              <input 
+                type="file" 
+                accept="image/*"
+                style={{display:'none'}}
+                onChange={(e) => {
+                  const file = e.target.files[0];
+                  if (file) {
+                    if (file.size > 500000) {
+                      Swal.fire('오류', '이미지 크기는 500KB 이하로 해주세요', 'error');
+                      return;
+                    }
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                      setSettings({...settings, companyLogo: reader.result});
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }}
+              />
+            </label>
+            
+            {/* 로고 삭제 버튼 */}
+            {settings.companyLogo && (
+              <button
+                onClick={() => setSettings({...settings, companyLogo: ''})}
+                style={{
+                  padding: '10px 15px',
+                  backgroundColor: '#ef4444',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                🗑️ 삭제
+              </button>
+            )}
+          </div>
+          <p style={{fontSize:'11px', color:'#999', marginTop:'8px'}}>
+            ※ 500KB 이하 이미지만 가능합니다
+          </p>
+        </div>
+
+        {/* 미리보기 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>👁️ 미리보기</label>
+          <div style={{
+            backgroundColor: '#2563eb',
+            color: 'white',
+            padding: '15px 20px',
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            {settings.companyLogo ? (
+              <img 
+                src={settings.companyLogo} 
+                alt="로고" 
+                style={{width:'30px', height:'30px', borderRadius:'4px', objectFit:'cover'}}
+              />
+            ) : (
+              <span style={{fontSize:'24px'}}>📋</span>
+            )}
+            <span style={{fontSize:'18px', fontWeight:'bold'}}>{settings.companyName || '화이트라인'}</span>
+          </div>
+        </div>
+
+        {/* 대표자명 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>👤 대표자명</label>
+          <p style={styles.settingDesc}>견적서 서명란에 표시됩니다.</p>
+          <input
+            type="text"
+            value={settings.representative || ''}
+            onChange={(e) => setSettings({...settings, representative: e.target.value})}
+            placeholder="대표자 성함"
+            style={{padding:'10px 15px', borderRadius:'8px', border:'1px solid #ddd', fontSize:'14px', width:'200px'}}
+          />
+        </div>
+
+        {/* 직인 이미지 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>🔏 직인 이미지</label>
+          <p style={styles.settingDesc}>견적서 서명란에 표시되는 직인 도장 이미지입니다. (권장: 100x100px, 투명 배경 PNG)</p>
+          <div style={{display:'flex', gap:'15px', alignItems:'center', flexWrap:'wrap'}}>
+            <div style={{width:'70px', height:'70px', borderRadius:'50%', border:'2px dashed #ddd', display:'flex', alignItems:'center', justifyContent:'center', backgroundColor:'#f8fafc', overflow:'hidden'}}>
+              {settings.sealImage ? (
+                <img src={settings.sealImage} alt="직인" style={{width:'100%', height:'100%', objectFit:'contain'}} />
+              ) : (
+                <span style={{fontSize:'28px'}}>🔏</span>
+              )}
+            </div>
+            <label style={{padding:'10px 20px', backgroundColor:'#7c3aed', color:'white', borderRadius:'8px', cursor:'pointer', fontSize:'14px'}}>
+              📁 직인 이미지 선택
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  if (file.size > 500000) { Swal.fire('오류', '이미지 크기는 500KB 이하로 해주세요', 'error'); return; }
+                  const reader = new FileReader();
+                  reader.onloadend = () => setSettings({...settings, sealImage: reader.result});
+                  reader.readAsDataURL(file);
+                }
+              }} />
+            </label>
+            {settings.sealImage && (
+              <button onClick={() => setSettings({...settings, sealImage: ''})}
+                style={{padding:'10px 15px', backgroundColor:'#ef4444', color:'white', border:'none', borderRadius:'8px', cursor:'pointer', fontSize:'14px'}}>
+                🗑️ 삭제
+              </button>
+            )}
+          </div>
+          <p style={{fontSize:'11px', color:'#999', marginTop:'8px'}}>※ 투명 배경 PNG 권장, 500KB 이하</p>
+        </div>
+
+        {/* 소독증명서 로고 (가로형) */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>🧾 소독증명서 로고 (가로형)</label>
+          <p style={styles.settingDesc}>소독증명서 하단과 워터마크에 사용되는 가로형 로고입니다. (권장: 가로 300px 이상, 투명 배경 PNG)</p>
+          <div style={{display:'flex', gap:'15px', alignItems:'center', flexWrap:'wrap'}}>
+            <div style={{width:'180px', height:'60px', borderRadius:'8px', border:'2px dashed #ddd', display:'flex', alignItems:'center', justifyContent:'center', backgroundColor:'#f8fafc', overflow:'hidden'}}>
+              {settings.certLogo ? (
+                <img src={settings.certLogo} alt="소독증명서 로고" style={{width:'100%', height:'100%', objectFit:'contain'}} />
+              ) : (
+                <span style={{fontSize:'12px', color:'#aaa'}}>가로형 로고</span>
+              )}
+            </div>
+            <label style={{padding:'10px 20px', backgroundColor:'#059669', color:'white', borderRadius:'8px', cursor:'pointer', fontSize:'14px'}}>
+              📁 로고 선택
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  if (file.size > 1000000) { Swal.fire('오류', '이미지 크기는 1MB 이하로 해주세요', 'error'); return; }
+                  const reader = new FileReader();
+                  reader.onloadend = () => setSettings({...settings, certLogo: reader.result});
+                  reader.readAsDataURL(file);
+                }
+              }} />
+            </label>
+            {settings.certLogo && (
+              <button onClick={() => setSettings({...settings, certLogo: ''})}
+                style={{padding:'10px 15px', backgroundColor:'#ef4444', color:'white', border:'none', borderRadius:'8px', cursor:'pointer', fontSize:'14px'}}>
+                🗑️ 삭제
+              </button>
+            )}
+          </div>
+          <p style={{fontSize:'11px', color:'#999', marginTop:'8px'}}>※ 투명 배경 PNG 권장, 1MB 이하. 증명서 하단 중앙 + 워터마크로 자동 적용됩니다.</p>
+        </div>
+
+        {/* 회사 연락처 (견적서용) */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>📞 회사 연락처</label>
+          <p style={styles.settingDesc}>견적서에 표시될 회사 전화번호입니다.</p>
+          <input
+            type="text"
+            value={settings.companyPhone || ''}
+            onChange={(e) => setSettings({...settings, companyPhone: e.target.value})}
+            placeholder="예: 02-000-0000"
+            style={{padding:'10px 15px', borderRadius:'8px', border:'1px solid #ddd', fontSize:'14px', width:'200px'}}
+          />
+        </div>
+
+        {/* 회사 주소 (견적서용) */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>📍 회사 주소</label>
+          <p style={styles.settingDesc}>견적서에 표시될 회사 주소입니다.</p>
+          <input
+            type="text"
+            value={settings.companyAddress || ''}
+            onChange={(e) => setSettings({...settings, companyAddress: e.target.value})}
+            placeholder="회사 주소 입력"
+            style={{padding:'10px 15px', borderRadius:'8px', border:'1px solid #ddd', fontSize:'14px', width:'100%', boxSizing:'border-box'}}
+          />
+        </div>
+
+        {/* ── 작업 완료 설정 ── */}
+        <div style={{...styles.settingItem, background:'#f0fdf4', borderRadius:12, padding:16, border:'1px solid #86efac'}}>
+          <label style={{...styles.settingLabel, color:'#065f46'}}>✅ 작업 완료 설정</label>
+          <p style={styles.settingDesc}>배정플랜에서 작업 완료 처리 시 동작 방식을 설정합니다.</p>
+
+          {/* 소독증명서 팝업 토글 */}
+          <div style={{background:'white', borderRadius:10, padding:'12px 14px', border:`1px solid ${(settings.showCertPopup ?? true) ? '#86efac' : '#e2e8f0'}`}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <div>
+                <div style={{fontWeight:'bold', fontSize:14}}>🧾 소독증명서 팝업 표시</div>
+                <div style={{fontSize:12, color:'#6b7280', marginTop:3}}>
+                  {(settings.showCertPopup ?? true)
+                    ? 'ON: 완료 처리 후 "소독증명서 필요하신가요?" 팝업 표시'
+                    : 'OFF: 팝업 없이 완료 처리만 (certTarget 고객은 항상 표시)'}
+                </div>
+              </div>
+              {/* 토글 스위치 */}
+              <div
+                onClick={() => setSettings({...settings, showCertPopup: !(settings.showCertPopup ?? true)})}
+                style={{
+                  width:50, height:26, borderRadius:13, cursor:'pointer',
+                  background: (settings.showCertPopup ?? true) ? '#10b981' : '#d1d5db',
+                  position:'relative', flexShrink:0, transition:'background 0.2s',
+                }}
+              >
+                <div style={{
+                  position:'absolute', top:3,
+                  left: (settings.showCertPopup ?? true) ? 26 : 3,
+                  width:20, height:20, borderRadius:'50%', background:'white',
+                  transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.2)',
+                }} />
+              </div>
+            </div>
+            {/* 상태 설명 */}
+            <div style={{
+              marginTop:10, padding:'8px 12px', borderRadius:8, fontSize:12,
+              background: (settings.showCertPopup ?? true) ? '#f0fdf4' : '#fef9c3',
+              color: (settings.showCertPopup ?? true) ? '#065f46' : '#92400e',
+            }}>
+              {(settings.showCertPopup ?? true)
+                ? '✅ 완료 처리 후 소독증명서 발급 여부를 물어봅니다'
+                : '⚡ 완료 처리만 하고 팝업 없이 넘어갑니다\n   (🧾 certTarget ON 고객은 설정에 관계없이 항상 발급 팝업이 표시됩니다)'}
+            </div>
+          </div>
+        </div>
+
+        {/* ── 견적서 PDF 여백 콘텐츠 설정 ── */}
+        <div style={{...styles.settingItem, background:'#f0f9ff', borderRadius:12, padding:16, border:'1px solid #bae6fd'}}>
+          <label style={{...styles.settingLabel, color:'#0369a1'}}>📄 견적서 PDF 여백 콘텐츠</label>
+          <p style={styles.settingDesc}>전체페이지 출력 시 1페이지 하단 여백에 표시할 내용을 설정합니다. 토글로 ON/OFF 선택 가능합니다.</p>
+
+          {/* 서비스 보증 */}
+          {[
+            { key:'guarantee', icon:'🛡️', label:'서비스 보증', placeholder:'재방문 1회 무상 보장\n작업 후 72시간 이내 재발생 시 무상 AS\n정기계약 고객 우선 출동 서비스' },
+            { key:'intro',     icon:'🏆', label:'회사 소개',   placeholder:'설립연도, 주요 실적, 보유 자격증 등을 입력하세요.' },
+            { key:'caution',   icon:'⚠️', label:'주의사항/협조사항', placeholder:'작업 당일 30분 전 환기 부탁드립니다\n식품·식기류는 덮어두시거나 치워주세요\n반려동물은 작업 중 다른 공간에 격리 부탁드립니다' },
+            { key:'contact',   icon:'📞', label:'담당자 연락처', placeholder:'ON 시 담당자 이름/전화/이메일이 자동으로 표시됩니다.' },
+          ].map(({ key, icon, label, placeholder }) => {
+            const item = settings.quotePdfMargin?.[key] || { on: false, text: '' };
+            const isContact = key === 'contact';
+            return (
+              <div key={key} style={{marginTop:14, background:'white', borderRadius:10, padding:'12px 14px', border:`1px solid ${item.on ? '#60a5fa' : '#e2e8f0'}`}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: item.on && !isContact ? 10 : 0}}>
+                  <span style={{fontWeight:'bold', fontSize:14}}>{icon} {label}</span>
+                  {/* 토글 스위치 */}
+                  <label style={{display:'flex', alignItems:'center', gap:8, cursor:'pointer', userSelect:'none'}}>
+                    <div
+                      onClick={() => {
+                        const cur = settings.quotePdfMargin || {};
+                        const prev = cur[key] || { on: false, text: '' };
+                        setSettings({
+                          ...settings,
+                          quotePdfMargin: { ...cur, [key]: { ...prev, on: !prev.on } }
+                        });
+                      }}
+                      style={{
+                        width:44, height:24, borderRadius:12, cursor:'pointer', transition:'all 0.2s',
+                        background: item.on ? '#3b82f6' : '#d1d5db',
+                        position:'relative', flexShrink:0,
+                      }}
+                    >
+                      <div style={{
+                        position:'absolute', top:2, left: item.on ? 22 : 2,
+                        width:20, height:20, borderRadius:'50%', background:'white',
+                        transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.2)',
+                      }} />
+                    </div>
+                    <span style={{fontSize:13, color: item.on ? '#2563eb' : '#9ca3af', fontWeight:'bold'}}>
+                      {item.on ? 'ON' : 'OFF'}
+                    </span>
+                  </label>
+                </div>
+                {item.on && !isContact && (
+                  <textarea
+                    value={item.text || ''}
+                    onChange={e => {
+                      const cur = settings.quotePdfMargin || {};
+                      const prev = cur[key] || { on: true, text: '' };
+                      setSettings({ ...settings, quotePdfMargin: { ...cur, [key]: { ...prev, text: e.target.value } } });
+                    }}
+                    placeholder={placeholder}
+                    rows={4}
+                    style={{
+                      width:'100%', padding:'10px', borderRadius:8, border:'1px solid #ddd',
+                      fontSize:13, resize:'vertical', boxSizing:'border-box', marginTop:4,
+                      fontFamily:'inherit', lineHeight:1.6,
+                    }}
+                  />
+                )}
+                {item.on && isContact && (
+                  <div style={{fontSize:12, color:'#64748b', marginTop:6, padding:'8px 10px', background:'#f0f9ff', borderRadius:6}}>
+                    💡 담당자 정보(이름·전화·이메일)와 회사 전화번호가 자동으로 표시됩니다.
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Anthropic API 키 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>🔑 Anthropic API 키</label>
+          <p style={styles.settingDesc}>AI 기능(사진/텍스트 자동배정, 번호판 인식)에 사용됩니다.</p>
+          <div style={{display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap'}}>
+            <input
+              type={showApiKey ? 'text' : 'password'}
+              value={settings.anthropicApiKey || ''}
+              onChange={(e) => setSettings({...settings, anthropicApiKey: e.target.value})}
+              placeholder="sk-ant-..."
+              style={{
+                padding: '10px 15px',
+                borderRadius: '8px',
+                border: '1px solid #ddd',
+                fontSize: '14px',
+                width: '320px',
+                fontFamily: 'monospace'
+              }}
+            />
+            <button
+              onClick={() => setShowApiKey(!showApiKey)}
+              style={{padding:'10px 14px', borderRadius:'8px', border:'1px solid #ddd', background:'#f8fafc', cursor:'pointer', fontSize:'14px'}}
+            >
+              {showApiKey ? '🙈 숨기기' : '👁️ 보기'}
+            </button>
+          </div>
+          {settings.anthropicApiKey && (
+            <p style={{fontSize:'12px', color:'#10b981', marginTop:'6px'}}>✅ API 키 등록됨</p>
+          )}
+        </div>
+
+        {/* AI 사진/텍스트 자동배정 ON/OFF */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>📷 AI 사진/텍스트 자동배정</label>
+          <p style={styles.settingDesc}>배정플랜에서 사진이나 텍스트로 AI 자동배정 버튼을 표시합니다.</p>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <button
+              onClick={() => setSettings({...settings, aiAssignEnabled: !settings.aiAssignEnabled})}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '20px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: settings.aiAssignEnabled !== false ? '#0ea5e9' : '#d1d5db',
+                color: settings.aiAssignEnabled !== false ? 'white' : '#6b7280',
+                fontWeight: 'bold'
+              }}
+            >
+              {settings.aiAssignEnabled !== false ? '✅ 사용중' : '❌ 사용안함'}
+            </button>
+            <span style={{fontSize:'12px', color:'#666'}}>
+              {settings.aiAssignEnabled !== false ? '배정플랜에 AI 자동배정 버튼 표시됨' : '버튼이 숨겨집니다'}
+            </span>
+          </div>
+        </div>
+
+        {/* 고객앱 평가 탭 ON/OFF */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>⭐ 고객앱 평가 탭</label>
+          <p style={styles.settingDesc}>고객 앱 하단 탭에 서비스 평가(별점) 탭을 표시합니다.</p>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <button
+              onClick={() => setSettings({...settings, reviewTabEnabled: settings.reviewTabEnabled === false ? true : false})}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '20px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: settings.reviewTabEnabled !== false ? '#f59e0b' : '#d1d5db',
+                color: settings.reviewTabEnabled !== false ? 'white' : '#6b7280',
+                fontWeight: 'bold'
+              }}
+            >
+              {settings.reviewTabEnabled !== false ? '✅ 표시중' : '❌ 숨김'}
+            </button>
+            <span style={{fontSize:'12px', color:'#666'}}>
+              {settings.reviewTabEnabled !== false ? '고객앱에 평가 탭이 표시됩니다' : '평가 탭이 숨겨집니다'}
+            </span>
+          </div>
+        </div>
+
+        {/* 야근인정제도 ON/OFF */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>🌙 야근인정제도</label>
+          <p style={styles.settingDesc}>야근 인정 기준시간 체크 여부를 설정합니다.</p>
+          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+            <button 
+              onClick={() => setSettings({...settings, overtimeEnabled: !settings.overtimeEnabled})}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '20px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: settings.overtimeEnabled !== false ? '#7c3aed' : '#d1d5db',
+                color: settings.overtimeEnabled !== false ? 'white' : '#6b7280',
+                fontWeight: 'bold'
+              }}
+            >
+              {settings.overtimeEnabled !== false ? '✅ 사용중' : '❌ 사용안함'}
+            </button>
+            <span style={{fontSize:'12px', color:'#666'}}>
+              {settings.overtimeEnabled !== false ? '출근 시간 기준으로 야근 인정 여부 결정' : '모든 야근 자동 인정'}
+            </span>
+          </div>
+        </div>
+
+        {/* 야근 기준시간 (30분 단위) */}
+        {settings.overtimeEnabled !== false && (
+          <div style={styles.settingItem}>
+            <label style={styles.settingLabel}>⏰ 야근 인정 기준시간</label>
+            <p style={styles.settingDesc}>이 시간 전에 출근해야 야근이 인정됩니다.</p>
+            <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
+              <select 
+                value={settings.overtimeHour ?? 10} 
+                onChange={(e) => setSettings({...settings, overtimeHour: parseInt(e.target.value)})}
+                style={styles.settingSelect}
+              >
+                {[6, 7, 8, 9, 10, 11, 12].map(h => (
+                  <option key={h} value={h}>오전 {h}시</option>
+                ))}
+              </select>
+              <select 
+                value={settings.overtimeMinute ?? 0} 
+                onChange={(e) => setSettings({...settings, overtimeMinute: parseInt(e.target.value)})}
+                style={styles.settingSelect}
+              >
+                <option value={0}>00분</option>
+                <option value={30}>30분</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* 금액 증감 단위 */}
+        <div style={styles.settingItem}>
+          <label style={styles.settingLabel}>💰 금액 증감 단위</label>
+          <p style={styles.settingDesc}>금액 입력 시 화살표 클릭당 증감되는 금액입니다.</p>
+          <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
+            {[1000, 5000, 10000].map(step => (
+              <label key={step} style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '8px 15px',
+                background: settings.priceStep === step ? '#3b82f6' : '#f1f5f9',
+                color: settings.priceStep === step ? 'white' : '#374151',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: settings.priceStep === step ? 'bold' : 'normal'
+              }}>
+                <input 
+                  type="radio" 
+                  name="priceStep" 
+                  value={step}
+                  checked={settings.priceStep === step}
+                  onChange={() => setSettings({...settings, priceStep: step})}
+                  style={{display: 'none'}}
+                />
+                {step.toLocaleString()}원
+              </label>
+            ))}
+          </div>
         </div>
 
         <button onClick={handleSaveSettings} style={styles.saveBtn}>💾 설정 저장</button>
+      </div>
+
+      {/* 사용약제 관리 */}
+      <div style={styles.section}>
+        <div style={styles.sectionHeader}>
+          <h3 style={styles.sectionTitle}>🧪 사용약제 관리</h3>
+          <button onClick={handleAddPesticide} style={styles.addBtn}>+ 추가</button>
+        </div>
+        <p style={styles.settingDesc}>
+          배정플랜에서 작업 완료 처리 시 사용하는 약제 목록입니다. 약제명과 단위를 등록하세요.
+        </p>
+        {pesticideTypes.length === 0 ? (
+          <div style={{
+            textAlign:'center', padding:'20px', color:'#9ca3af',
+            background:'#f9fafb', borderRadius:'8px', fontSize:'13px'
+          }}>
+            등록된 약제가 없습니다.<br />
+            <span style={{fontSize:'11px'}}>+ 추가 버튼으로 약제를 등록하세요.</span>
+          </div>
+        ) : (
+          <div style={{display:'flex', flexDirection:'column', gap:'8px'}}>
+            {pesticideTypes.map((pest, idx) => (
+              <div key={pest.id} style={{
+                display:'flex', alignItems:'center', gap:'10px',
+                padding:'10px 12px', background:'#f8fafc',
+                borderRadius:'8px', cursor:'pointer'
+              }} onClick={() => handleEditPesticide(pest)}>
+                <span style={{
+                  width:'22px', height:'22px', display:'flex', alignItems:'center',
+                  justifyContent:'center', background:'#e0f2fe', borderRadius:'50%',
+                  fontSize:'11px', fontWeight:'bold', color:'#0369a1', flexShrink:0
+                }}>{idx + 1}</span>
+                <span style={{flex:1, fontSize:'13px', fontWeight:'bold'}}>{pest.name}</span>
+                <span style={{
+                  fontSize:'11px', color:'#6366f1', background:'#ede9fe',
+                  padding:'2px 8px', borderRadius:'10px', fontWeight:'bold'
+                }}>{pest.unit}</span>
+                <span style={{fontSize:'11px', color:'#9ca3af'}}>✏️</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* 데이터 백업 */}
@@ -957,6 +1803,8 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
         <h3 style={styles.sectionTitle}>🗑️ 데이터 관리</h3>
         <div style={{display:'flex', flexDirection:'column', gap:'10px'}}>
           <button onClick={handleNormalizeCode} style={styles.normalizeBtn}>🔧 고객코드 정리</button>
+          <button onClick={handleMigrateStaffId} style={{...styles.normalizeBtn, backgroundColor:'#8b5cf6'}}>🔄 직원ID 통합 정리</button>
+          <button onClick={handleCleanDuplicateEvents} style={{...styles.normalizeBtn, backgroundColor:'#f59e0b'}}>🧹 중복 이벤트 정리</button>
           <button onClick={handleResetData} style={styles.resetBtn}>⚠️ 데이터 초기화</button>
         </div>
       </div>
@@ -975,15 +1823,6 @@ function SettingPage({ currentUser, staffList, onStaffUpdate }) {
           <div style={styles.legendRow}><span style={{...styles.legendColor, backgroundColor:'#7e22ce'}}></span>🟣 야근</div>
         </div>
       </div>
-
-      {/* 활동 기록 (원조 관리자만) */}
-      {isOriginalMaster && (
-        <div style={styles.section}>
-          <h3 style={styles.sectionTitle}>📋 활동 기록</h3>
-          <p style={styles.settingDesc}>2번째 관리자, 팀장, 부팀장의 관리 활동 기록</p>
-          <button onClick={handleViewActivityLog} style={styles.logBtn}>📋 기록 보기</button>
-        </div>
-      )}
     </div>
   );
 }
@@ -1015,8 +1854,71 @@ const styles = {
   resetBtn: { width:'100%', padding:'12px', backgroundColor:'#ef4444', color:'white', border:'none', borderRadius:'8px', fontWeight:'bold', cursor:'pointer' },
   legendGrid: { display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:'8px' },
   legendRow: { display:'flex', alignItems:'center', gap:'8px', fontSize:'12px' },
-  legendColor: { width:'16px', height:'16px', borderRadius:'4px' },
-  logBtn: { width:'100%', padding:'12px', backgroundColor:'#6366f1', color:'white', border:'none', borderRadius:'8px', fontWeight:'bold', cursor:'pointer' }
+  legendColor: { width:'16px', height:'16px', borderRadius:'4px' }
 };
+
+// ── 담당자 전화번호 편집기 ──────────────────────────────────
+function MyPhoneEditor({ currentUser }) {
+  const [phone, setPhone] = React.useState(currentUser?.phone || '');
+  const [saving, setSaving] = React.useState(false);
+  const [saved, setSaved] = React.useState(false);
+
+  React.useEffect(() => {
+    setPhone(currentUser?.phone || '');
+  }, [currentUser?.phone]);
+
+  const handleSave = async () => {
+    if (!currentUser?.id) {
+      Swal.fire('오류', '로그인 정보를 찾을 수 없습니다.', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      // setDoc with merge: 문서가 없어도 생성, 있으면 업데이트
+      await setDoc(doc(db, 'staff', currentUser.id), {
+        phone,
+        name: currentUser.name || '',
+        email: currentUser.email || '',
+        role: currentUser.role || '',
+        visibleId: currentUser.visibleId || '',
+      }, { merge: true });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      Swal.fire('오류', '저장 실패: ' + e.message, 'error');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+      <input
+        type="tel"
+        value={phone}
+        onChange={e => setPhone(e.target.value)}
+        placeholder="예: 010-0000-0000"
+        style={{
+          padding: '10px 14px', borderRadius: '8px',
+          border: '1px solid #ddd', fontSize: '14px', width: '200px'
+        }}
+      />
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        style={{
+          padding: '10px 20px', background: saved ? '#10b981' : '#3b82f6',
+          color: 'white', border: 'none', borderRadius: '8px',
+          cursor: 'pointer', fontSize: '14px', fontWeight: 'bold',
+          transition: 'background 0.3s'
+        }}
+      >
+        {saving ? '저장 중...' : saved ? '✅ 저장됨' : '저장'}
+      </button>
+      <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+        견적서 PDF 담당자란에 표시됩니다.
+      </span>
+    </div>
+  );
+}
 
 export default SettingPage;

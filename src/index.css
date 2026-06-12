@@ -9,6 +9,19 @@ body {
   background-color: #f5f5f5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent; /* 터치 하이라이트 제거 */
+  /* iOS 노치/홈 인디케이터 safe area 적용 */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* 터치 기기 기본 설정 */
+button, input, select, textarea {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  touch-action: manipulation; /* 더블탭 줌 방지 */
 }
 
 /* 스크롤바 스타일 */
@@ -68,7 +81,8 @@ body {
 }
 
 .swal2-input, .swal2-select, .swal2-textarea {
-  font-size: 14px !important;
+  font-size: 16px !important; /* iOS 줌 방지 */
+  min-height: 44px !important;
 }
 
 /* 로딩 스피너 애니메이션 */
@@ -87,34 +101,91 @@ body {
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 
-/* 팝업 버튼 스타일 */
+/* 팝업 버튼 스타일 - 모바일 최적화 */
 .popup-btn {
   display: block;
   width: 100%;
-  padding: 12px;
-  margin-top: 8px;
+  padding: 14px;
+  margin-top: 10px;
   color: white;
   border: none;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 10px;
+  font-size: 15px;
   font-weight: bold;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, transform 0.1s;
+  min-height: 48px; /* 터치 최소 크기 */
 }
 
 .popup-btn:hover {
   opacity: 0.9;
 }
 
+.popup-btn:active {
+  transform: scale(0.98);
+}
+
+/* 버튼 크기 조절 */
+.popup-btn-large {
+  display: block;
+  width: 100%;
+  padding: 16px;
+  margin-top: 10px;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 17px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  min-height: 54px; /* 큰 버튼 */
+}
+
+.popup-btn-large:hover {
+  opacity: 0.9;
+}
+
+.popup-btn-large:active {
+  transform: scale(0.98);
+}
+
+.popup-btn-small {
+  display: block;
+  width: 100%;
+  padding: 12px 10px;
+  margin-top: 8px;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  min-height: 44px; /* 터치 최소 크기 */
+}
+
+.popup-btn-small:hover {
+  opacity: 0.9;
+}
+
+.popup-btn-small:active {
+  transform: scale(0.98);
+}
+
 /* 작업월 체크박스 */
 .month-check {
-  padding: 8px;
+  padding: 12px 8px;
   text-align: center;
   background: #f1f5f9;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   transition: all 0.2s;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .month-check.checked {
@@ -122,18 +193,148 @@ body {
   color: white;
 }
 
-.month-check:hover {
-  opacity: 0.8;
+.month-check:active {
+  transform: scale(0.95);
 }
 
-/* 반응형 */
+/* 모바일 반응형 */
 @media (max-width: 768px) {
+  /* FullCalendar 모바일 */
   .fc .fc-toolbar {
     flex-direction: column;
     gap: 10px;
   }
   
   .fc .fc-toolbar-title {
+    font-size: 16px !important;
+    font-weight: bold;
+  }
+  
+  .fc .fc-daygrid-day-number {
+    font-size: 14px;
+    font-weight: 600;
+    padding: 6px;
+  }
+  
+  .fc-event {
+    font-size: 12px !important;
+    padding: 4px 6px !important;
+    min-height: 24px;
+  }
+  
+  /* SweetAlert2 모바일 */
+  .swal2-popup {
+    width: 95% !important;
+    max-width: 400px !important;
+    padding: 20px 15px !important;
+    font-size: 15px !important;
+  }
+  
+  .swal2-title {
+    font-size: 18px !important;
+    padding: 0 0 15px 0 !important;
+  }
+  
+  .swal2-html-container {
     font-size: 14px !important;
+    line-height: 1.6 !important;
+  }
+  
+  .swal2-actions {
+    gap: 10px !important;
+    flex-wrap: wrap !important;
+  }
+  
+  .swal2-confirm, .swal2-cancel, .swal2-deny {
+    min-width: 100px !important;
+    min-height: 46px !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    border-radius: 10px !important;
+    padding: 12px 20px !important;
+  }
+  
+  /* 입력 필드 모바일 */
+  input[type="text"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="email"],
+  input[type="date"],
+  select,
+  textarea {
+    font-size: 16px !important; /* iOS 줌 방지 */
+    min-height: 46px;
+    padding: 12px !important;
+    border-radius: 8px !important;
+  }
+  
+  /* 체크박스/라디오 터치 영역 */
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 22px;
+    height: 22px;
+    margin-right: 8px;
+  }
+  
+  label {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 4px 8px;
+  }
+  
+  /* 팝업 버튼 모바일 */
+  .popup-btn {
+    padding: 16px;
+    font-size: 16px;
+    margin-top: 12px;
+    min-height: 52px;
+    border-radius: 12px;
+  }
+  
+  .popup-btn-large {
+    padding: 18px;
+    font-size: 18px;
+    min-height: 58px;
+  }
+  
+  .popup-btn-small {
+    padding: 14px 12px;
+    font-size: 14px;
+    min-height: 48px;
+  }
+  
+  /* 작업월 체크박스 모바일 */
+  .month-check {
+    padding: 14px 10px;
+    font-size: 14px;
+    min-height: 48px;
+    border-radius: 10px;
+  }
+}
+
+/* 작은 모바일 (iPhone SE 등) */
+@media (max-width: 375px) {
+  .swal2-popup {
+    width: 98% !important;
+    padding: 15px 10px !important;
+  }
+  
+  .swal2-title {
+    font-size: 16px !important;
+  }
+  
+  .swal2-confirm, .swal2-cancel, .swal2-deny {
+    min-width: 80px !important;
+    font-size: 14px !important;
+    padding: 10px 15px !important;
+  }
+  
+  .popup-btn {
+    font-size: 15px;
+  }
+  
+  .popup-btn-large {
+    font-size: 16px;
   }
 }

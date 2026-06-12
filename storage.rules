@@ -1,0 +1,38 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── 문의 첨부 이미지 ──────────────────────────
+    // 경로: inquiry-images/{customerId}/{filename}
+    match /inquiry-images/{customerId}/{filename} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+        && resource == null  // 신규 업로드만
+        && request.resource.size < 5 * 1024 * 1024   // 5MB 이하
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // ── 작업 사진 (방역 완료 후) ───────────────────
+    // 경로: work-photos/{customerId}/{eventId}/{filename}
+    match /work-photos/{customerId}/{eventId}/{filename} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024  // 10MB 이하
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // ── 해충 AI 분석 이미지 ────────────────────────
+    // 경로: pest-images/{customerId}/{filename}
+    match /pest-images/{customerId}/{filename} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // ── 기타 (나머지 경로는 인증 필요) ────────────
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

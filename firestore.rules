@@ -1,0 +1,176 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 로그인 전용
+    match /customers/{docId}          { allow read, write: if request.auth != null; }
+    match /plans/{docId}              { allow read, write: if request.auth != null; }
+    match /pestMonitoring/{docId}     { allow read, write: if request.auth != null; }
+    match /pesticideTypes/{docId}     { allow read, write: if request.auth != null; }
+    match /reports/{docId}            { allow read, write: if request.auth != null; }
+    match /quoteTemplates/{docId}     { allow read, write: if request.auth != null; }
+    match /contractTemplates/{docId}  { allow read, write: if request.auth != null; }
+
+    // 직원 - 비로그인 읽기 허용
+    match /staff/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 견적고객 - 공개링크 읽기 허용
+    match /quoteCustomers/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 견적서
+    match /quotes/{docId} {
+      allow read, write: if request.auth != null;
+      allow read: if true;
+      allow update: if request.auth == null
+        && request.resource.data.diff(resource.data).affectedKeys()
+           .hasOnly(['customerEdits','reQuoteRequest','viewedAt','status',
+                     'approvedAt','rejectedAt','rejectedReason','rejectedCategory',
+                     'contractRequestedAt','selectedFromCompare']);
+    }
+
+    // 계약서 - 고객 서명 허용
+    match /contracts/{docId} {
+      allow read, write: if request.auth != null;
+      allow read: if true;
+      allow update: if request.auth == null
+        && request.resource.data.diff(resource.data).affectedKeys()
+           .hasOnly(['status','signedAt','signerName','signatureData',
+                     'signedAgreed','viewedAt']);
+    }
+
+    // Q&A
+    match /quoteQnA/{docId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // 알림
+    match /notifications/{docId} {
+      allow read, write: if request.auth != null;
+      allow create: if true;
+    }
+
+    // 설정 - 읽기는 모두 허용 (고객앱 API키, 회사정보 로드용)
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // 배정 이벤트 - 고객 앱 읽기 허용 (로그인 필요)
+    match /events/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // 스케줄 이벤트
+    match /scheduleEvents/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 스케줄 알람
+    match /scheduleAlarms/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 공지사항 - 로그인한 고객 읽기 허용
+    match /notices/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // ── 고객 앱 전용 컬렉션 ──────────────────────
+
+    // 고객 문의 / 클레임 / 칭찬
+    match /customerInquiries/{docId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // 고객 요청 (일정변경, 소독일지정 등)
+    match /customerRequests/{docId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // 고객 앱 사용자 정보 (FCM 토큰, 알림 설정)
+    match /customerUsers/{docId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null;
+    }
+
+    // 고객 알림
+    match /customerNotifications/{docId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // 해충 AI 분석 이력
+    match /pestAnalysis/{docId} {
+      allow read:           if request.auth != null;
+      allow create:         if request.auth != null;
+      allow update, delete: if request.auth != null;
+    }
+
+    // 고객 서비스 리뷰
+    match /customerReviews/{docId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+    }
+
+    // 소독증명서 발급 이력
+    match /certLogs/{docId} {
+      allow read:           if request.auth != null;
+      allow create:         if request.auth != null;
+      allow update, delete: if request.auth != null;
+    }
+
+    // FCM 발송 큐 (매니저앱 customerPush.js 사용)
+    match /fcmQueue/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // ── [FIX-B3] 1:1 채팅 - 서브컬렉션 명시 추가 ──
+    // 기존 catch-all로만 처리되면 서브컬렉션이 간헐적으로 막힐 수 있음
+    match /chatRooms/{roomId} {
+      allow read, write: if request.auth != null;
+      match /messages/{msgId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+
+    // 방역 사진 메타데이터
+    match /workPhotos/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 자동이체 신청서
+    match /autoDebits/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 방문확정 기록
+    match /visitConfirmations/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // 기타 (위에서 명시되지 않은 컬렉션 - 로그인 필요)
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
